@@ -60,7 +60,8 @@
                     for (i in resultSet.results) {
                         var $tr = $('<tr>');
                         for (j in resultSet.results[i]) {
-                            $tr.append($('<td>').text(resultSet.results[i][j].value));
+                        var contents = resultSet.results[i][j].value;
+                            $tr.append($('<td>').text(contents == null ? "[NO VALUE]" : contents));
                         }
                         $table.append($tr);
                     }
