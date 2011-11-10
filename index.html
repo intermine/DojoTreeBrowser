@@ -4,64 +4,256 @@
         <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.4/jquery.min.js" type="text/javascript"></script>
         <script src="http://www.intermine.org/lib/imbedding/0.2/imbedding.js" type="text/javascript"></script>
 
-        <link rel="stylesheet" href="http://ajax.googleapis.com/ajax/libs/dojo/1.6/dijit/themes/tundra/tundra.css" media="screen">
+        <link rel="stylesheet" href="http://ajax.googleapis.com/ajax/libs/dojo/1.6/dijit/themes/nihilo/nihilo.css" media="screen">
 
         <script type="text/javascript">
             dojo.require("dojo.store.JsonRest");
             dojo.require("dijit.Tree");
+            dojo.require("dijit.Menu");
 
             var paths = [];
+            var constraints = [];
+            var logic_ops = [];
+            var classMenu, tree, selectedItem;
+            var $BASE_URL = "http://squirrel.flymine.org/intermine-test";
+            var OBJECT_OPS = {
+                "LOOKUP": "matches on some field",
+                "IN": "is in a list",
+                "NOT IN": "is not in a list"
+            };
+            var CODES = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ").split("");
+            var ATTR_OPS = {
+                "=": "is",
+                "<": "sorts before",
+                ">": "sorts after",
+                "<=": "is less than or equal to",
+                ">=": "is greater than or equal to",
+            };
+            var NULL_OPS = {
+                "IS NULL": "does not exist",
+                "IS NOT NULL": "exists"
+            };
+            $.extend(ATTR_OPS, NULL_OPS);
 
             dojo.ready(function() {
-                IMBedding.setBaseUrl("http://squirrel.flymine.org/intermine-test");
-                var model = new dojo.store.JsonRest({
-                    target: "http://squirrel.flymine.org/intermine-test/service/model/",
-                    mayHaveChildren: function(obj) { return "children" in obj },
-                    getChildren: function(obj, onComplete, onError) {
-                        this.get(obj.id).then(function(fullObj) {
-                            obj.children  = fullObj.children;
-                            onComplete(fullObj.children);
-                        }, onError);
-                    },
-                    getRoot: function(onItem, onError) { this.get("Employee").then(onItem, onError) },
-                    getLabel: function(obj) { return obj.name }
+                IMBedding.setBaseUrl($BASE_URL);
+                setUpTree("Employee");
+                setUpTreeClassMenu();
+            });
+
+            function setUpTreeClassMenu() {
+                classMenu = new dijit.Menu({targetNodeIds: ["class-menu"], leftClickToOpen: true});
+                $.getJSON($BASE_URL + "/service/model/json", function(res) {
+                    var classes = res.model.classes;
+                    var i;
+
+                    for (i in classes) {
+                        classMenu.addChild(new dijit.MenuItem({
+                            label: classes[i].name, 
+                            onClick: (function(cls) {return function() {setUpTree(cls)}})(classes[i].name)
+                        }));
+                    }
                 });
-                    
-                tree = new dijit.Tree({model: model, autoExpand: false, title: "Model Browser", persist: false}, "tree");
+                classMenu.startup();
+            }
+
+            function setUpTree(cls) {
+                $('#values table').empty();
+                $('#constraint-list').empty();
+                paths = [];
+                constraints = [];
+                logic_ops = [];
+                var model = getNewModel(cls);
+                if (tree) {
+                    tree.destroyRecursive();
+                }
+                var newTree = new dijit.Tree({
+                    model: model, 
+                    autoExpand: false, 
+                    title: "Model Browser", 
+                    persist: false, 
+                    id: "tree"
+                }, document.createElement("div"));
+                dojo.byId("treeContainer").appendChild(newTree.domNode);
+                tree = newTree;
                 tree.startup();
-                dojo.connect(tree, "onClick", function(obj) {
-                    paths.push(obj.id);
-                    if ("children" in obj) {
+                dojo.connect(tree, "onClick", function(obj, node, evt) {
+                    if ("fields" in obj) {
                         return;
                     }
+                    $(evt.target.parentNode).addClass("in-view " + ("" + obj.id).replace(/\./g, "-"));
+                    paths.push(obj.id);
                     displayTable();
                 });
-            });
+                dojo.connect(tree, "onMouseDown", function(evt) {
+                    selectedItem = dijit.getEnclosingWidget(evt.target).item;
+                });
+                var contextMenu = new dijit.Menu({targetNodeIds: ["tree"]});
+                contextMenu.addChild(new dijit.MenuItem({
+                    label: "constrain", 
+                    onClick: addConstraintCreator
+                }));
+                contextMenu.startup();
+            }
+
+            function getNewModel(rootCls) {
+                var model = new dojo.store.JsonRest({
+                    rootCls: rootCls,
+                    target: "http://squirrel.flymine.org/intermine-test/service/model/",
+                    mayHaveChildren: function(obj) { return "fields" in obj },
+                    getChildren: function(obj, onComplete, onError) {
+                        this.get(obj.id).then(function(fullObj) {
+                            obj.fields  = fullObj.fields;
+                            onComplete(fullObj.fields);
+                        }, onError);
+                    },
+                    getRoot: function(onItem, onError) { this.get(this.rootCls).then(onItem, onError) },
+                    getLabel: function(obj) { return obj.name },
+                });
+                return model;
+            }
+
+            function addConstraintCreator() {
+                var item = selectedItem;
+                var $conBox = $('<div>');
+                var $pathSpan = $('<span class="con-path">').text(item.name).appendTo($conBox);
+                var $select = $('<select>').appendTo($conBox);
+                var i, $button, $valBox, $extraValBox;
+                if ("fields" in item) {
+                    for (i in OBJECT_OPS) {
+                        $select.append($('<option>').attr("value", i).text(OBJECT_OPS[i]));
+                    }
+                } else {
+                    for (i in ATTR_OPS) {
+                        $select.append($('<option>').attr("value", i).text(ATTR_OPS[i]));
+                    }
+                }
+                $select.change(function() {
+                    var selectedOp = $select.val();
+                    if (selectedOp in NULL_OPS) {
+                        $valBox.attr("disabled", true);
+                        $button.attr("disabled", false);
+                    } else {
+                        $valBox.attr("disabled", false);
+                        $button.attr("disabled", !$valBox.val());
+                    }
+                    if (selectedOp == "LOOKUP") {
+                        $extraValBox.show();
+                    } else {
+                        $extraValBox.hide();
+                    }
+                });
+
+                $valBox = $('<input type="text">').appendTo($conBox).change(function() {$button.attr("disabled", !$(this).val())});
+                $extraValBox = $('<input type="text" style="display: none;">').appendTo($conBox);
+                $button = $('<button disabled>').text("Add").click(function() {
+                    var conpath = item.id;
+                    var op = $select.val();
+                    var value = $valBox.val();
+                    var extraValue = $extraValBox.val();
+                    var newConstraint = {path: conpath, op: op};
+                    if (!(op in NULL_OPS)) {
+                        if (value) {
+                            newConstraint.value = value;
+                        }
+                        if (extraValue) {
+                            newConstraint.extraValue = extraValue;
+                        }
+                    }
+                    constraints.push(newConstraint);
+                    $conBox.remove();
+                    displayTable();
+                }).appendTo($conBox);
+                $conBox.append($('<button>').text("cancel").click(function() {$conBox.remove()}));
+                $conBox.appendTo($('#constraints'));
+            }
 
             function makeRemovalButton(path) {
                 var $button = $('<button>').text("Remove");
                 $button.click(function() {
+                    $('.' + path.replace(/\./g, "-")).removeClass("in-view");
                     paths.splice(paths.indexOf(path), 1);
                     displayTable();
                 });
                 return $button;
             }
 
+            function renderConstraints() {
+                $('#constraint-list').empty();
+                var i;
+                for (i in constraints) {
+                    if (i > 0) {
+                        var $logicOp = $('<li>').text(logic_ops[i] || "AND").appendTo('#constraint-list');
+                        $logicOp.click((function(idx) { return function() {
+                            var currentOp = $logicOp.text();
+                            if (currentOp == "AND") {
+                                logic_ops[idx] = "OR";
+                            } else {
+                                logic_ops[idx] = "AND";
+                            }
+                            displayTable();
+                        }})(i));
+                    }
+                    var con = constraints[i];
+                    var $conBox = $('<li class="constraint">');
+                    $conBox.append($('<span class="path">').text(con.path));
+                    $conBox.append($('<span class="op">').text(con.op));
+                    if (con.value) {
+                        $conBox.append($('<span class="value">').text(con.value));
+                    }
+                    if (con.extraValue) {
+                        $conBox.append($('<span class="extra-value">').text(con.extraValue));
+                    }
+
+                    $conBox.append($('<button>').text("remove").click((function(idx) {return function() {
+                        constraints.splice(idx, 1);
+                        displayTable();
+                    }})(i)));
+                    $('#constraint-list').append($conBox);
+                }
+            }
+
             function displayTable() {
-                IMBedding.loadQuery({select: paths, from: "testmodel"}, {format: "jsonrows", size: 10}, function(resultSet) {
+                var $table = $('#values table').empty();
+                if (paths.length < 1) {
+                    return;
+                }
+                var conLogic, i;
+                if (logic_ops.length > 0) {
+                    conLogic = "";
+                    for (i in constraints) {
+                        if (i > 0) {
+                            conLogic += " " + (logic_ops[i] || "AND") + " ";
+                        }
+                        conLogic += CODES[i];
+                    }
+                }
+                renderConstraints();
+                var query = {select: paths, from: "testmodel", where: constraints};
+                if (conLogic) {
+                    query.constraintLogic = conLogic;
+                }
+                IMBedding.loadQuery(query, {format: "jsonrows", size: 10}, function(resultSet) {
                     var i = 0;
                     var j = 0;
-                    var $table = $('#values table').empty();
                     var $header = $('<tr>');
                     for (i in resultSet.columnHeaders) {
-                        $header.append($('<th>').text(resultSet.columnHeaders[i]).append(makeRemovalButton(resultSet.views[i])));
+                        var header = resultSet.columnHeaders[i];
+                        $header.append(
+                            $('<th>')
+                               .text(header)
+                               .append(
+                                   makeRemovalButton(resultSet.views[i])
+                                )
+                        );
                     }
                     $table.append($header);
                     for (i in resultSet.results) {
                         var $tr = $('<tr>');
                         for (j in resultSet.results[i]) {
-                        var contents = resultSet.results[i][j].value;
-                            $tr.append($('<td>').text(contents == null ? "[NO VALUE]" : contents));
+                            var contents = resultSet.results[i][j].value;
+                            var link = $BASE_URL + resultSet.results[i][j].url;
+                            $tr.append($('<td>').append(contents == null ? "[NO VALUE]" : $('<a>').text(contents).attr("href", link)));
                         }
                         $table.append($tr);
                     }
@@ -71,10 +263,16 @@
         </script>
     </head>
 
-    <body class="tundra">
+    <body class="nihilo">
         <div id="container">
+            <button id="class-menu">Change root class</button>
             <h1>Demo Ajax Query-Builder</h1>
-            <div id="tree"></div>
+            <div id="constraint-box">
+                <h2>Constraints</h2>
+                <div id="constraints"></div>
+                <ul id="constraint-list"></ul>
+            </div>
+            <div id="treeContainer"></div>
             <div id="values">
                 <h2>First 10 results</span></h2>
                 <table></table>
@@ -83,6 +281,25 @@
     </body>
 
     <style type="text/css">
+        #class-menu, #constraint-box {
+            float: right;
+        }
+
+        .in-view {
+            border: 1px solid #555;
+            background: #e8f6ff;
+        }
+
+        li {
+            margin: 0.4em 0.1em 0.4em 0.1em;
+        }
+
+        li span {
+            border: 1px solid #555;
+            padding: 0.1em 0.2em 0.1em 0.2em;
+            margin: 0.1em;
+        }
+
         #container {
             margin-left: auto;
             margin-right: auto;
